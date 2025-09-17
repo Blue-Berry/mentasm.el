@@ -76,9 +76,6 @@
   "Remove ARG and its value from CMD string."
   (replace-regexp-in-string (concat "\\b" (regexp-quote arg) "\\s-+\\S-+\\b") "" cmd))
 
-(defun mentasm-java-process-bytecode (asm-lines filter-directives)
-  "Stub function for Java bytecode processing. Not used in OCaml-only version."
-  asm-lines)
 
 ;;;; File Discovery Functions
 
@@ -572,67 +569,6 @@ point to a file that exists."
 ;;;; Language Functions
 ;;;;; Compile Commands
 
-(defun mentasm--c-quirks (cmd &key src-buffer)
-  "Handle quirks in CMD, and return unchanged or modified CMD.
-
-Use SRC-BUFFER as buffer for local variables."
-  (if (and (buffer-local-value 'mentasm-flag-quirks src-buffer)
-           (string-match-p (rx "-save-temps") cmd)
-           (string-match-p (rx "-P") cmd))
-      (mentasm-split-rm-single cmd "-save-temps")
-    cmd))
-
-(cl-defun mentasm--c-compile-cmd (&key src-buffer)
-  "Process a compile command for gcc/clang.
-
-Use SRC-BUFFER as buffer containing local variables."
-
-  (mentasm--with-local-files
-   src-buffer
-   (let* ( ;; Turn off passing the source file if we find compile_commands
-          (no-src-filename (mentasm--handle-c-compile-cmd src-buffer))
-          (asm-format (buffer-local-value 'mentasm-asm-format src-buffer))
-          (disass (buffer-local-value 'mentasm-disassemble src-buffer))
-          (cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      "-g"
-                      (if disass
-                          "-c"
-                        "-S")
-                      (if no-src-filename
-                          ""
-                        src-filename)
-                      "-o" output-filename
-                      (when (and (not (booleanp asm-format))
-                                 (not disass))
-                        (concat "-masm=" asm-format)))
-                " "))
-          (cmd (mentasm--c-quirks cmd :src-buffer src-buffer)))
-     cmd)))
-
-(cl-defun mentasm--c-dwarf-compile-cmd (&key src-buffer)
-  "Process a compile command for c dwarf.
-
-Use SRC-BUFFER as buffer for local variables.
-
-We use a hack where we overwrite the asm setting to trick the
-rest of the code into doing what we want. In this case, setting
-this value dosen't make sense anyway, so it should be fine to do
-this."
-  (with-current-buffer src-buffer
-
-    (setq mentasm-disassemble t)
-    (let* ((old-cmd (mentasm--c-compile-cmd :src-buffer src-buffer))
-           (binary-out (file-local-name (mentasm-output-filename src-buffer)))
-           (asm-out (progn
-                      (setq mentasm-disassemble nil)
-                      (file-local-name (mentasm-output-filename src-buffer))))
-           (full-cmd (string-join
-                      (list old-cmd
-                            "&&" "eu-readelf" "--debug-dump=info" binary-out ">" asm-out)
-                      " ")))
-      full-cmd)))
 
 (cl-defun mentasm--ocaml-compile-cmd (&key src-buffer)
   "Process a compile command for ocaml.
@@ -667,317 +603,10 @@ Needed as ocaml cannot output asm to a non-hardcoded file"
                 " ")))
      cmd)))
 
-(cl-defun mentasm--lisp-compile-cmd (&key src-buffer)
-  "Process a compile command for common LISP.
 
-Use SRC-BUFFER as buffer for local variables.
-
-Assumes function name to disassemble is \\='main\\='."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((cmd (buffer-local-value 'mentasm-command src-buffer))
-          (interpreter (cl-first (split-string cmd nil t)))
-          (disass-eval "\"(disassemble 'main)\"")
-          (disass-eval-unquoted "(disassemble 'main)"))
-     (pcase interpreter
-       ("sbcl"
-        (string-join
-         (list cmd "--noinform" "--load"
-               src-filename
-               "--eval" disass-eval "--non-interactive"
-               ;; Remove leading comments
-               "|" "sed" "'s/^;\s//'" ">"
-               output-filename)
-         " "))
-       ("clisp"
-        (string-join
-         (list cmd "-q" "-x"
-               (concat
-                "\"(load \\\"" src-filename "\\\") " disass-eval-unquoted "\"")
-               ">" output-filename)
-         " "))
-       (_
-        (error "This Common Lisp interpreter is not supported"))))))
-
-(cl-defun mentasm--mlir-compile-cmd (&key src-buffer)
-  "Process a compile command for mlir.
-
-Use SRC-BUFFER as buffer containing local variables."
-
-  (mentasm--with-local-files
-   src-buffer
-   (let* ( ;; Turn off passing the source file if we find compile_commands
-          (cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      src-filename
-                      "-o" output-filename)
-                " ")))
-     cmd)))
-
-(cl-defun mentasm--rust-compile-cmd (&key src-buffer)
-  "Process a compile command for rustc.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((asm-format (buffer-local-value 'mentasm-asm-format src-buffer))
-          (disass (buffer-local-value 'mentasm-disassemble src-buffer))
-          (cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      "-g"
-                      "--emit"
-                      (if disass
-                          "link"
-                        "asm")
-                      src-filename
-                      "-o" output-filename
-                      (when (and (not (booleanp asm-format))
-                                 (not disass))
-                        (concat "-Cllvm-args=--x86-asm-syntax=" asm-format)))
-                " ")))
-     cmd)))
-
-(cl-defun mentasm--go-compile-cmd (&key src-buffer)
-  "Process a compile command for go.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      "tool" "compile"
-                      "-S"
-                      "-o" output-filename
-                      src-filename)
-                " ")))
-     cmd)))
-
-(cl-defun mentasm--d-compile-cmd (&key src-buffer)
-  "Process a compile command for d.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((compiler (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list compiler "-g" "-output-s" src-filename "-of" output-filename)
-                " ")))
-     cmd)))
-
-(cl-defun mentasm--pony-compile-cmd (&key src-buffer)
-  "Process a compile command for ponyc.
-
-Use SRC-BUFFER as buffer for local variables."
-  (let* ((cmd (buffer-local-value 'mentasm-command src-buffer))
-         (dir (expand-file-name "pony/" mentasm--temp-dir))
-         (local-dir (file-local-name dir))
-         (_ (make-directory dir t))
-         ;; (base-filename (file-name-sans-extension
-         ;;                 (file-name-nondirectory
-         ;;                  (buffer-file-name))))
-         (base-filename "pony")
-         (base-filename (expand-file-name base-filename dir))
-         (asm-filename (shell-quote-argument (file-local-name (concat base-filename ".s"))))
-         (object-filename (shell-quote-argument (file-local-name (concat base-filename ".o"))))
-         ;; TODO should we copy this in lisp here, or pass this to the compilation command?
-         (_ (copy-file (buffer-file-name)
-                       (expand-file-name dir) t))
-         (dis (buffer-local-value 'mentasm-disassemble src-buffer))
-         (cmd (string-join
-               (list
-                cmd
-                "-g"
-                ;; FIXME: test this properly and use mentasm-asm-format to expose it.
-                (if dis
-                    "-r=obj"
-                  "-r=asm")
-                local-dir
-                "-o" local-dir
-                "&&" "mv"
-                (if dis object-filename asm-filename)
-                (shell-quote-argument
-                 (file-local-name (mentasm-output-filename src-buffer))))
-               " ")))
-    (with-current-buffer src-buffer
-      (setq mentasm--real-src-file
-            (expand-file-name (file-name-nondirectory
-                               (buffer-file-name))
-                              dir)))
-    cmd))
-
-(cl-defun mentasm--py-compile-cmd (&key src-buffer)
-  "Process a compile command for python3.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((cmd (buffer-local-value 'mentasm-command src-buffer)))
-     (string-join
-      (list cmd "-m" "dis" src-filename
-            ">" output-filename)
-      " "))))
-
-(defun mentasm--hack-p (src-buffer)
-  "Return non-nil if SRC-BUFFER should should use hhvm instead of php."
-  (with-current-buffer src-buffer
-    (save-excursion
-      (goto-char (point-min))
-      (re-search-forward (rx "<?hh") nil t))))
-
-(defun mentasm--php-default-compile-cmd (src-buffer)
-  "Return the default php compile command for SRC-BUFFER."
-  (if (mentasm--hack-p src-buffer)
-      "hh_single_compile"
-    "php"))
-
-(cl-defun mentasm--php-compile-cmd (&key src-buffer)
-  "Process a compile command for PHP.
-
-Use SRC-BUFFER as buffer for local variables.
-
-In order to disassemble opcdoes, we need to have the vld.so
-extension to php on.
-https://github.com/derickr/vld"
-  (mentasm--with-local-files
-   src-buffer
-   (if (mentasm--hack-p src-buffer)
-       (concat (buffer-local-value 'mentasm-command src-buffer)
-               " " src-filename " > " output-filename)
-     (concat (buffer-local-value 'mentasm-command src-buffer)
-             " -dvld.active=1 -dvld.execute=0 -dvld.verbosity=1 "
-             src-filename " 2> " output-filename " > /dev/null"))))
-
-(cl-defun mentasm--hs-compile-cmd (&key src-buffer)
-  "Process a compile command for ghc.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      "-g"
-                      (if (buffer-local-value 'mentasm-disassemble src-buffer)
-                          ""
-                        "-S")
-                      src-filename
-                      "-o" output-filename)
-                " ")))
-     cmd)))
-
-(cl-defun mentasm--java-compile-cmd (&key src-buffer)
-  "Process a compile command for ocaml.
-
-Use SRC-BUFFER as buffer for local variables.
-
-Needed as ocaml cannot output asm to a non-hardcoded file"
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((class-filename (shell-quote-argument
-                           (concat (file-name-sans-extension src-filename) ".class")))
-          (cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      "-g"
-                      src-filename
-                      "&&"
-                      "javap"
-                      "-c" "-l"
-                      class-filename
-                      ">"
-                      output-filename)
-                " ")))
-     cmd)))
-
-(cl-defun mentasm--elisp-compile-override (&key src-buffer)
-  "Handle elisp overrides - this is a special case.
-
-Use SRC-BUFFER as buffer for local variables."
-  ;; We don't need the local path since Emacs lisp support handles remote paths
-  ;; natively.
-  (let ((file-name buffer-file-name))
-    (with-temp-buffer
-      (mentasm--disassemble-file file-name (current-buffer))
-      (mentasm--handle-finish-compile src-buffer nil :override-buffer (current-buffer)))))
-
-(cl-defun mentasm--nim-compile-cmd (&key src-buffer)
-  "Process a compile command for nim.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd
-           (let* ((outdir (file-local-name (expand-file-name "nim-cache" mentasm--temp-dir))))
-             (string-join
-              (list cmd
-                    "--debugger:native"
-                    "--noLinking"
-                    "--colors:off"
-                    (concat "--nimcache:" outdir)
-                    src-filename
-                    (concat
-                     "&& cp "
-                     (expand-file-name
-                      (concat "@m"
-                              (file-name-nondirectory src-filename)
-                              (if (string-match (rx "nim cpp") cmd) ".cpp.o" ".c.o"))
-                      outdir)
-                     " " output-filename))
-              " "))))
-     cmd)))
-
-(cl-defun mentasm--zig-compile-cmd (&key src-buffer)
-  "Process a compile command for zig.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((disass (buffer-local-value 'mentasm-disassemble src-buffer))
-          (cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      src-filename
-                      "--cache-dir" (expand-file-name "zig-cache" mentasm--temp-dir)
-                      (concat (if disass
-                                  "-femit-bin="
-                                "-fno-emit-bin -femit-asm=")
-                              output-filename))
-                " ")))
-     cmd)))
-
-(cl-defun mentasm--swift-compile-cmd (&key src-buffer)
-  "Process a compile command for swiftc.
-
-Use SRC-BUFFER as buffer for local variables."
-  (mentasm--with-local-files
-   src-buffer
-   (let* ((asm-format (buffer-local-value 'mentasm-asm-format src-buffer))
-          (cmd (buffer-local-value 'mentasm-command src-buffer))
-          (cmd (string-join
-                (list cmd
-                      "-g"
-                      "-emit-assembly"
-                      src-filename
-                      "-o" output-filename
-                      (when (not (booleanp asm-format))
-                        (concat "-Xllvm --x86-asm-syntax=" asm-format)))
-                " ")))
-     cmd)))
 
 ;;;;; Hidden Function Definitions
 
-(defvar mentasm--hidden-func-c
-  (rx bol (or (and "__" (0+ any))
-              (and "_" (or "init" "start" "fini"))
-              (and (opt "de") "register_tm_clones")
-              "call_gmon_start"
-              "frame_dummy"
-              (and ".plt" (0+ any)))
-      eol))
 
 (defvar mentasm--hidden-func-ocaml
   (rx bol
@@ -997,86 +626,10 @@ Use SRC-BUFFER as buffer for local variables."
           (and (1+ (1+ lower) (opt (or "64" "32" "8" "16")) (opt "_"))))
       eol))
 
-(defvar mentasm--hidden-func-zig
-  (rx bol (or (and "_" (0+ any))
-              (and (opt "de") "register_tm_clones")
-              "call_gmon_start"
-              "frame_dummy"
-              (and (0+ any) "@plt" (0+ any)))
-      eol))
 
 ;;;;; Demangling Functions
 
-(defun mentasm--path-to-swift-demangler ()
-  "Return the path to the configured Swift demangler.
 
-Depends on the active toolchain."
-  (mentasm--path-to-swift-tool "swift-demangle"))
-
-;;;;; Language Integrations
-
-(defun mentasm--path-to-swift-compiler ()
-  "Return the path to the configured Swift compiler.
-
-Depends on the active toolchain."
-  (mentasm--path-to-swift-tool "swiftc"))
-
-(defun mentasm--path-to-swift-tool (swift-tool)
-  "Return the path to SWIFT-TOOL, depending on the active toolchain."
-  (let* ((swift-tool-binary swift-tool)
-         (swift-tool-toolchain-path (shell-command-to-string (format "echo -n `xcrun --find %s`" swift-tool-binary))))
-    ;; If we have the Swift tool in PATH, just return it (this is the
-    ;; typical case in Linux systems). If it's not in PATH, look for a
-    ;; toolchain-specific path.
-    (cond
-     ((executable-find swift-tool-binary t)
-      swift-tool-binary)
-     ((executable-find swift-tool-toolchain-path t)
-      swift-tool-toolchain-path))))
-
-(defun mentasm--parse-compile-commands (comp-cmds file)
-  "Parse COMP-CMDS and extract a compilation dir and command for FILE."
-  (when-let* ((json-object-type 'alist)
-             (json-array-type 'vector)
-             (cmds (json-read-file comp-cmds))
-             (entry (cl-find-if
-                     (lambda (elt)
-                       (mentasm--file-equal-p
-                        file
-                        (expand-file-name
-                         (alist-get 'file elt "")
-                         (alist-get 'directory elt ""))))
-                     cmds))
-             (dir (alist-get 'directory entry))
-             (cmd (or (alist-get 'command entry)
-                      (string-join (alist-get 'arguments entry) " "))))
-    (list dir cmd)))
-
-(defun mentasm--handle-c-compile-cmd (src-buffer)
-  "Handle compile_commands.json for c/c++ for a given SRC-BUFFER.
-return t if successful."
-  (when-let* ((defaults (buffer-local-value 'mentasm--default-variables src-buffer))
-             (default-dir (cl-find 'mentasm-default-directory defaults))
-             (default-cmd (cl-find 'mentasm-command defaults))
-             (ccj "compile_commands.json")
-             (compile-cmd-file (locate-dominating-file (buffer-file-name src-buffer) ccj))
-             (compile-cmd-file (expand-file-name ccj compile-cmd-file))
-             ;; We need a remote path to the compilation JSON so that it is
-             ;; properly parsed, but a local source file path to match the
-             ;; JSON's contents.
-             (to-ret (mentasm--parse-compile-commands
-                      compile-cmd-file (file-local-name (buffer-file-name src-buffer)))))
-    (with-current-buffer src-buffer
-      (setq-local mentasm-command
-                  ;; Remove -c, -S, and -o <arg> if present,
-                  ;; as we will add them back
-                  ;; Remove args starting with -flto, as -flto breaks asm output.
-                  (thread-first (cl-second to-ret)
-                                (mentasm-split-rm-single "-c")
-                                (mentasm-split-rm-single "-S")
-                                (mentasm-split-rm-single "-flto" #'string-prefix-p)
-                                (mentasm-split-rm-double "-o")))
-      t)))
 
 ;;;; Language Definitions
 (defvar mentasm-languages)
@@ -1087,13 +640,11 @@ return t if successful."
     . ,(make-mentasm-lang :compile-cmd "ocamlopt"
                           :supports-asm t
                           :supports-disass t
-                          :compile-cmd-function #'mentasm--ocaml-compile-cmd
                           :disass-hidden-funcs mentasm--hidden-func-ocaml))
    (ocaml-mode
     . ,(make-mentasm-lang :compile-cmd "ocamlopt"
                           :supports-asm t
                           :supports-disass t
-                          :compile-cmd-function #'mentasm--ocaml-compile-cmd
                           :disass-hidden-funcs mentasm--hidden-func-ocaml))
    ))
 (make-obsolete-variable 'mentasm-languages
@@ -1374,69 +925,6 @@ Argument SRC-BUFFER source buffer."
           (push line result))))
     (nreverse result)))
 
-(cl-defun mentasm--process-php-bytecode (src-buffer asm-lines)
-  "Process and filter php ASM-LINES from SRC-BUFFER."
-  (if (mentasm--hack-p src-buffer)
-      asm-lines
-    (let ((state 'useless)
-          (current-line nil)
-          (result nil))
-      (dolist (line asm-lines)
-        (cl-case state
-          ((text)
-           (push line result)
-           (when (string-match "^-+$" line)
-             (setq state 'asm)))
-          ((asm)
-           (cond
-            ((string-empty-p line) (setq state 'useless))
-            ((string-match "^ *\\([0-9]+\\) +[0-9]+" line)
-             (setq current-line (string-to-number (match-string 1 line)))
-             (add-text-properties 0 (length line) `(mentasm-src-line ,current-line) line))
-            (t
-             (add-text-properties 0 (length line) `(mentasm-src-line ,current-line) line)))
-           (push line result))
-          (otherwise
-           (when (string-match "^filename:" line)
-             (setq state 'text)))))
-      (nreverse result))))
-
-(cl-defun mentasm--process-python-bytecode (_src-buffer asm-lines)
-  "Process and filter python ASM-LINES from SRC-BUFFER."
-  (let ((source-linum nil)
-        (result nil))
-    (dolist (line asm-lines)
-      (if (not (string-match (rx bol (repeat 3 (opt space))
-                                 (group (opt (1+ digit))) (0+ space)
-                                 (group (opt "-->")) (0+ space)
-                                 (group (opt ">>")) (0+ space)
-                                 (group (1+ digit)) (0+ space)
-                                 (group (1+ (or letter "_"))) (0+ space)
-                                 (group (opt (1+ digit))) (0+ space)
-                                 (group (opt (0+ any))))
-                             line))
-          ;; just push the var with no linum
-          (push line result)
-        ;; Grab line numbers
-        (unless (string-empty-p (match-string 1 line))
-          (setq source-linum
-                (string-to-number (match-string 1 line))))
-        ;; Reformat line to be more like assembly
-        (setq line (string-join
-                    (list
-                     ;; Register
-                     (match-string 4 line)
-                     ;; Command
-                     (match-string 5 line)
-                     (match-string 6 line)
-                     (match-string 7 line))
-                    "\t"))
-        (when source-linum
-          (add-text-properties 0 (length line)
-                               `(mentasm-src-line ,source-linum) line))
-        ;; Add line
-        (push line result)))
-    (nreverse result)))
 
 
 (cl-defun mentasm--process-asm-lines (src-buffer asm-lines)
@@ -1455,87 +943,7 @@ Essentially a switch that chooses which processing function to use."
      (t
       (mentasm--process-src-asm-lines src-buffer asm-lines)))))
 
-(cl-defun mentasm--process-go-asm-lines (_src-buffer asm-lines)
-  "Process and filter go ASM-LINES from SRC-BUFFER."
-  (let ((source-linum nil)
-        (result nil))
-    (dolist (line asm-lines)
-      (if (not
-           (string-match (rx bol (repeat 2 space)
-                             (group (opt (0+ any))) ":"
-                             (group (opt (1+ digit)) (1+ "\t"))
-                             (group (opt "0x" (0+ hex)) (1+ "\t"))
-                             (group (1+ xdigit) (1+ "\t"))
-                             (group (opt (0+ any)) (1+ "\t")))
-                         line))
-          ;; just push the var with no linum
-          (push line result)
-        ;; Grab line numbers
-        (unless (string-empty-p (match-string 2 line))
-          (setq source-linum
-                (string-to-number (match-string 2 line))))
-        ;; Reformat line to be more like assembly
-        (setq line (string-join
-                    (list (match-string 3 line)
-                          (match-string 4 line)
-                          (match-string 5 line))
-                    "\t"))
-        (when source-linum
-          (add-text-properties 0 (length line)
-                               `(mentasm-src-line ,source-linum) line))
-        ;; Add line
-        (push line result)))
-    (nreverse result)))
 
-(cl-defun mentasm--process-dwarf-readelf (src-buffer asm-lines)
-  "Process and filter DWARF ASM-LINES from SRC-BUFFER.
-
-Tuned to Elfutils's implementation of readelf"
-  (let ((result nil)
-        (die nil)
-        (filename nil)
-        (linum nil)
-        (comp-dir nil)
-        (src-file-name (file-local-name (or (buffer-local-value 'mentasm--real-src-file src-buffer)
-                                            (buffer-file-name src-buffer)))))
-    (dolist (line asm-lines)
-      (if (string-match (rx bol space
-                            (group "[" (0+ space) (1+ hex) "]"))
-                        line)
-          ;; We have seen the next die - let's commit the previous one
-          (progn
-            (when (and linum filename (mentasm--file-equal-p src-file-name (expand-file-name filename comp-dir)))
-              (dolist (dieline die)
-                (add-text-properties 0 (length dieline)
-                                     `(mentasm-src-line ,linum) dieline)))
-            (setq
-             result (nconc die result)
-             die nil
-             linum nil
-             filename nil))
-        ;; Collect information on an entire die before committing it.
-        (when-let* ((match-result
-                     (string-match (rx bol (1+ space)
-                                       (group (or "decl_file" "decl_line" "comp_dir")) (1+ space)
-                                       (group "(" (1+ alnum) ")") (1+ space)
-                                       (group (1+ (or alnum "."))))
-                                   line))
-                    (indicator (match-string 1 line))
-                    (payload (match-string 3 line)))
-          (message payload)
-          (pcase indicator
-            ("decl_file" (setq filename payload))
-            ("decl_line" (setq linum (string-to-number payload)))
-            ("comp_dir" (setq comp-dir payload)))))
-      (push line die))
-
-    ;; Final iteration of the die
-    (when (and linum (mentasm--file-equal-p src-file-name (expand-file-name filename comp-dir)))
-      (dolist (dieline die)
-        (add-text-properties 0 (length dieline)
-                             `(mentasm-src-line ,linum) dieline)))
-    (setq result (nconc die result))
-    (nreverse result)))
 
 ;;;;; HANDLERS
 (cl-defun mentasm--handle-finish-compile (buffer str &key override-buffer stopped)
@@ -1708,9 +1116,8 @@ Are you running two compilations at the same time?"))
     existing-cmd))
 
 ;;;;; UI Functions
-(defun mentasm-compile ()
+(defun mentasm--find-and-load-assembly ()
   "Find and load assembly for the current OCaml buffer."
-  (interactive)
   ;; Current buffer = src-buffer at this point
   (setq mentasm-src-buffer (current-buffer))
   (cond
@@ -1841,7 +1248,7 @@ Load ASM-FILE-PATH and display it for SRC-BUFFER."
 ;;;; Keymap
 (defvar mentasm-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'mentasm-compile)
+    (define-key map (kbd "C-c C-c") #'mentasm)
     map)
   "Keymap for function `mentasm-mode'.")
 
@@ -1874,56 +1281,6 @@ compilation of remote files."
 ;; IIUC, this "starter" business is not a necessary part of RMSBolt, but is
 ;; a way to provide sample files with which users can try out RMSBolt.
 
-(defvar mentasm-starter-files
-  '(("c" . "mentasm.c")
-    ("c++" . "mentasm.cpp")
-    ("ada" . "mentasm.adb")
-    ("ocaml" . "mentasm.ml")
-    ("cl" . "mentasm.lisp")
-    ("rust " . "mentasm.rs")
-    ("python" . "mentasm.py")
-    ("fortran" . "mentasm.f")
-    ("fortran90" . "mentasm.f90")
-    ("haskell" . "mentasm.hs")
-    ("mlir" . "mentasm.mlir")
-    ("php" . "mentasm.php")
-    ("pony" . "mentasm.pony")
-    ("emacs-lisp" . "mentasm-starter.el")
-    ("d" . "mentasm.d")
-    ("zig" . "mentasm.zig")
-    ("go" . "mentasm.go")
-    ("swift" . "mentasm.swift")
-    ;; Rmsbolt is capitalized here because of Java convention of Capitalized
-    ;; class names.
-    ("java" . "Rmsbolt.java")
-    ("nim" . "mentasm.nim")))
-
-;;;###autoload
-(defun mentasm-starter (lang-name)
-  "Setup new file based on the sample for the language provided.
-
-Uses LANG-NAME to determine the language."
-  (interactive
-   (list (completing-read "Language: " mentasm-starter-files nil t)))
-  (mentasm--gen-temp)
-  (let* ((starter-file-name (cdr (assoc lang-name mentasm-starter-files)))
-         (file-name
-          (expand-file-name starter-file-name mentasm--temp-dir))
-         (exists (file-exists-p file-name))
-         (src-file-name
-          (when mentasm-dir
-            (expand-file-name starter-file-name
-                              (expand-file-name "starters/" mentasm-dir))))
-         (src-file-exists (when src-file-name
-                            (file-exists-p src-file-name))))
-    (if (not src-file-exists)
-        (error "Could not find starter files! Are you sure the starters/ folder is available? If you want to overide, set `mentasm-dir' to your install path")
-      (unless exists
-        (copy-file src-file-name file-name)
-        (set-file-modes file-name #o644))
-      (find-file file-name)
-      (unless mentasm-mode
-        (mentasm-mode 1)))))
 
 ;;;; Overlay Commands
 (defun mentasm--goto-line (line)
@@ -2048,7 +1405,7 @@ scrolls to the first line, instead of the first line of the last block."
   (when (and (mentasm--is-active-src-buffer)
              mentasm-automatic-recompile)
     (setq mentasm--automated-compile t)
-    (mentasm-compile)))
+    (mentasm--find-and-load-assembly)))
 
 ;; Auto-save the src buffer after it has been unchanged for `mentasm-compile-delay' seconds.
 ;; The buffer is then automatically recompiled via `mentasm--after-save'.
@@ -2121,7 +1478,7 @@ Provides code region highlighting and automatic recompilation."
   (interactive)
   (unless mentasm-mode
     (mentasm-mode))
-  (mentasm-compile))
+  (mentasm--find-and-load-assembly))
 
 (provide 'mentasm)
 
