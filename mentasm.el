@@ -375,6 +375,14 @@ This list of variables will automatically be restored to nil.")
   "A binary to use for objdumping when using `mentasm-disassemble'.
 Useful if you have multiple objdumpers and want to select between them")
 
+(defvar-local mentasm--assembly-file-watcher nil
+  "File watcher for the current assembly file.
+Automatically reloads assembly when the .s file changes.")
+
+(defvar-local mentasm--current-assembly-file nil
+  "Path to the currently loaded assembly file.
+Used to track which file we're watching for changes.")
+
 (defvar mentasm--temp-dirs-hash (make-hash-table :test #'equal)
   "Hash table mapping file path remote components to a 'local' temporary directory.")
 
@@ -1162,7 +1170,9 @@ Are you running two compilations at the same time?"))
   "Load assembly file for display.
 Load ASM-FILE-PATH and display it for SRC-BUFFER."
   (when (file-exists-p asm-file-path)
-    (mentasm--display-assembly src-buffer asm-file-path)))
+    (mentasm--display-assembly src-buffer asm-file-path)
+    ;; Set up file watching for automatic updates
+    (mentasm--setup-assembly-file-watcher src-buffer asm-file-path)))
 
 (defun mentasm--display-assembly (src-buffer asm-file)
   "Display assembly file ASM-FILE for SRC-BUFFER."
@@ -1232,6 +1242,59 @@ Load ASM-FILE-PATH and display it for SRC-BUFFER."
         (setq mentasm-src-buffer src-buffer)
         (display-buffer (current-buffer) '(nil (inhibit-same-window . t)))
         (run-at-time 0 nil #'mentasm-update-overlays)))))
+
+;;;;; File Watching Functions
+
+(defun mentasm--setup-assembly-file-watcher (src-buffer asm-file-path)
+  "Set up file watcher for ASM-FILE-PATH to automatically reload when it changes.
+SRC-BUFFER is the source buffer that should be updated when assembly changes."
+  (with-current-buffer src-buffer
+    ;; Clean up any existing watcher first
+    (mentasm--cleanup-assembly-file-watcher)
+    
+    ;; Set up new watcher if file exists
+    (when (and asm-file-path (file-exists-p asm-file-path))
+      (condition-case err
+          (progn
+            (setq mentasm--current-assembly-file asm-file-path)
+            (setq mentasm--assembly-file-watcher
+                  (file-notify-add-watch 
+                   asm-file-path
+                   '(change)
+                   (lambda (event)
+                     (mentasm--on-assembly-file-change src-buffer event))))
+            (mentasm--debug "Set up file watcher for: %s" asm-file-path))
+        (error 
+         (mentasm--debug "Failed to set up file watcher: %s" (error-message-string err))
+         (setq mentasm--assembly-file-watcher nil
+               mentasm--current-assembly-file nil))))))
+
+(defun mentasm--on-assembly-file-change (src-buffer event)
+  "Handle assembly file change EVENT for SRC-BUFFER.
+Automatically reloads the assembly when the .s file is modified."
+  (when (and (buffer-live-p src-buffer)
+             (eq (nth 1 event) 'changed))
+    (mentasm--debug "Assembly file changed, reloading: %s" (nth 2 event))
+    ;; Small delay to ensure file write is complete
+    (run-with-timer 0.1 nil
+                    (lambda ()
+                      (when (buffer-live-p src-buffer)
+                        (with-current-buffer src-buffer
+                          (let ((asm-file mentasm--current-assembly-file))
+                            (when (and asm-file (file-exists-p asm-file))
+                              (mentasm--display-assembly src-buffer asm-file)))))))))
+
+(defun mentasm--cleanup-assembly-file-watcher ()
+  "Clean up the current assembly file watcher."
+  (when mentasm--assembly-file-watcher
+    (condition-case err
+        (progn
+          (file-notify-rm-watch mentasm--assembly-file-watcher)
+          (mentasm--debug "Cleaned up file watcher for: %s" mentasm--current-assembly-file))
+      (error
+       (mentasm--debug "Error cleaning up file watcher: %s" (error-message-string err))))
+    (setq mentasm--assembly-file-watcher nil
+          mentasm--current-assembly-file nil)))
 
 (defun mentasm--stop-running-compilation ()
   "Cancel a compilation."
@@ -1393,7 +1456,10 @@ scrolls to the first line, instead of the first line of the last block."
   (when-let (output-buffer (get-buffer mentasm-output-buffer))
     (when (or (eq (current-buffer) output-buffer)
               (eq (current-buffer) (buffer-local-value 'mentasm-src-buffer output-buffer)))
-      (mentasm--remove-overlays))))
+      (mentasm--remove-overlays)
+      ;; Clean up file watcher if this is the source buffer
+      (when (eq (current-buffer) (buffer-local-value 'mentasm-src-buffer output-buffer))
+        (mentasm--cleanup-assembly-file-watcher)))))
 
 (defun mentasm--is-active-src-buffer ()
   "Helper to see if our src buffer is active."
@@ -1465,6 +1531,7 @@ This mode is enabled in both src and assembly output buffers."
     (mentasm--gen-temp))
    (t ;; Cleanup
     (mentasm--remove-overlays)
+    (mentasm--cleanup-assembly-file-watcher)
     (remove-hook 'after-change-functions #'mentasm--after-change t)
     (remove-hook 'after-save-hook #'mentasm--after-save t)
     (remove-hook 'kill-buffer-hook #'mentasm--on-kill-buffer t)
@@ -1472,9 +1539,9 @@ This mode is enabled in both src and assembly output buffers."
 
 ;;;###autoload
 (defun mentasm ()
-  "Start a mentasm compilation and enable `mentasm-mode'.
+  "Find and load assembly for the current OCaml buffer and enable `mentasm-mode'.
 
-Provides code region highlighting and automatic recompilation."
+Provides code region highlighting and automatic assembly reloading when .s files change."
   (interactive)
   (unless mentasm-mode
     (mentasm-mode))
