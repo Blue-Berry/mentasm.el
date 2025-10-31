@@ -137,33 +137,43 @@ START-DIR is the directory to start searching from, defaults to current buffer d
          (source-dirs (nth 1 components))
          (best-match nil)
          (best-score 0))
-    
+
     (mentasm--debug "Looking for assembly file matching: %s (basename: %s)" source-file source-basename)
-    
+
     (dolist (asm-file assembly-files)
       (let* ((asm-basename (file-name-sans-extension (file-name-nondirectory asm-file)))
              (asm-dirs (split-string (file-name-directory asm-file) "/" t))
              (score 0))
-        
+
         (mentasm--debug "Checking assembly file: %s (basename: %s)" asm-file asm-basename)
-        
-        ;; Check if basename matches
+
+        ;; Check if basename matches (direct match)
         (when (string= source-basename asm-basename)
           (setq score (+ score 10))
-          (mentasm--debug "Basename match found! Score: %d" score)
-          
+          (mentasm--debug "Basename match found! Score: %d" score))
+
+        ;; Check for dune executable naming convention: dune__exe__<Name>
+        ;; e.g., main.ml -> dune__exe__Main.s
+        (when (and (string-prefix-p "dune__exe__" asm-basename)
+                   (string= (downcase source-basename)
+                            (downcase (substring asm-basename 11))))
+          (setq score (+ score 10))
+          (mentasm--debug "Dune executable basename match found! Score: %d" score))
+
+        ;; Only continue if we have a basename match
+        (when (> score 0)
           ;; Check directory component matches
           (dolist (src-dir source-dirs)
             (when (member src-dir asm-dirs)
               (setq score (+ score 1))
               (mentasm--debug "Directory match: %s, Score now: %d" src-dir score)))
-          
+
           ;; Update best match if this is better
           (when (> score best-score)
             (setq best-match asm-file
                   best-score score)
             (mentasm--debug "New best match: %s (score: %d)" best-match best-score)))))
-    
+
     (mentasm--debug "Final match: %s" best-match)
     best-match))
 
@@ -1546,6 +1556,47 @@ Provides code region highlighting and automatic assembly reloading when .s files
   (unless mentasm-mode
     (mentasm-mode))
   (mentasm--find-and-load-assembly))
+
+;;;###autoload
+(defun mentasm-select ()
+  "Interactively select an assembly file from all .s files in the dune project."
+  (interactive)
+  (cond
+   ((derived-mode-p 'asm-mode)
+    (message "Cannot process assembly files. Are you sure you are not in the output buffer?"))
+   ((not (or (derived-mode-p 'tuareg-mode) (derived-mode-p 'ocaml-mode)))
+    (message "Mentasm only supports OCaml files (tuareg-mode or ocaml-mode)"))
+   (t
+    (mentasm--parse-options)
+    (let* ((src-buffer (current-buffer))
+           (project-root (mentasm--find-dune-project)))
+      (if (not project-root)
+          (message "No dune-project found. Make sure you're in a dune project directory.")
+        (let* ((build-dirs (mentasm--find-build-directories project-root))
+               (assembly-files (when build-dirs
+                                (mentasm--find-assembly-files build-dirs))))
+          (cond
+           ((not build-dirs)
+            (message "No _build directories found in project."))
+           ((not assembly-files)
+            (message "No assembly files (.s) found in build directories. Try building your project first."))
+           (t
+            ;; Create readable choices with relative paths
+            (let* ((choices (mapcar
+                            (lambda (path)
+                              (cons (file-relative-name path project-root) path))
+                            assembly-files))
+                   (selected (completing-read "Select assembly file: "
+                                            choices
+                                            nil t)))
+              (when selected
+                (let ((full-path (cdr (assoc selected choices))))
+                  (message "Loading assembly from: %s" selected)
+                  ;; Enable mentasm-mode in source buffer for highlighting
+                  (unless mentasm-mode
+                    (mentasm-mode 1))
+                  ;; Process the assembly file directly
+                  (mentasm--load-assembly-file src-buffer full-path))))))))))))
 
 (provide 'mentasm)
 
