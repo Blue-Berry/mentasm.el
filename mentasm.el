@@ -1598,6 +1598,73 @@ Provides code region highlighting and automatic assembly reloading when .s files
                   ;; Process the assembly file directly
                   (mentasm--load-assembly-file src-buffer full-path))))))))))))
 
+;;;###autoload
+(defun mentasm-open-assembly ()
+  "Open the assembly file corresponding to the current OCaml buffer.
+
+This opens the .s file directly without preprocessing or split buffer display."
+  (interactive)
+  (cond
+   ((derived-mode-p 'asm-mode)
+    (message "Already in an assembly file."))
+   ((not (or (derived-mode-p 'tuareg-mode) (derived-mode-p 'ocaml-mode)))
+    (message "Mentasm only supports OCaml files (tuareg-mode or ocaml-mode)"))
+   (t
+    (let* ((src-buffer (current-buffer))
+           (src-file (buffer-file-name src-buffer)))
+      (if (not src-file)
+          (message "Buffer must be visiting a file to find assembly")
+        (let* ((project-root (mentasm--find-dune-project))
+               (build-dirs (when project-root
+                            (mentasm--find-build-directories project-root)))
+               (assembly-files (when build-dirs
+                                (mentasm--find-assembly-files build-dirs)))
+               (matching-asm (when assembly-files
+                              (mentasm--match-assembly-file src-file assembly-files))))
+          (cond
+           ((not project-root)
+            (message "No dune-project found. Make sure you're in a dune project directory."))
+           ((not build-dirs)
+            (message "No _build directories found in project."))
+           ((not assembly-files)
+            (message "No assembly files (.s) found in build directories. Try building your project first."))
+           ((not matching-asm)
+            (message "No matching assembly file found for %s" (file-name-nondirectory src-file)))
+           (t
+            (message "Opening assembly file: %s" (file-relative-name matching-asm project-root))
+            (find-file matching-asm)))))))))
+
+;;;###autoload
+(defun mentasm-open-assembly-select ()
+  "Select and open an assembly file from all .s files in the dune project.
+
+This opens the .s file directly without preprocessing or split buffer display."
+  (interactive)
+  (let* ((project-root (mentasm--find-dune-project)))
+    (if (not project-root)
+        (message "No dune-project found. Make sure you're in a dune project directory.")
+      (let* ((build-dirs (mentasm--find-build-directories project-root))
+             (assembly-files (when build-dirs
+                              (mentasm--find-assembly-files build-dirs))))
+        (cond
+         ((not build-dirs)
+          (message "No _build directories found in project."))
+         ((not assembly-files)
+          (message "No assembly files (.s) found in build directories. Try building your project first."))
+         (t
+          ;; Create readable choices with relative paths
+          (let* ((choices (mapcar
+                          (lambda (path)
+                            (cons (file-relative-name path project-root) path))
+                          assembly-files))
+                 (selected (completing-read "Select assembly file to open: "
+                                          choices
+                                          nil t)))
+            (when selected
+              (let ((full-path (cdr (assoc selected choices))))
+                (message "Opening assembly file: %s" selected)
+                (find-file full-path))))))))))
+
 (provide 'mentasm)
 
 ;;; mentasm.el ends here
